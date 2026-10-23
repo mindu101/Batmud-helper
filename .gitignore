@@ -1,0 +1,15 @@
+# Local credentials and game client state
+**/token.txt
+
+# Java build output and temporary archives
+*.class
+/agent-bridge/build/
+/agent-bridge/build-new/
+/agent-bridge/build-stubs-compiled/
+/agent-bridge/build-stale-*/
+/agent-bridge/agent-bridge.new.jar
+/agent-bridge/agent-bridge.installed-backup.jar
+
+# Python cache
+__pycache__/
+*.pyc

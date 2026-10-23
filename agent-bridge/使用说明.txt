@@ -1,0 +1,46 @@
+BatMUD AgentBridge 0.1.0
+
+已安装到当前 BatMUD 1.107 的 plugins 目录。每次启动客户端时自动加载。
+插件仅在本机 127.0.0.1:18765 监听，所有接口均要求随机令牌。
+令牌自动保存在游戏用户目录 agent-bridge/token.txt；命令行工具自动读取。
+不包含 AI 模型，不读保存密码的配置，也不主动将游戏输出上传外网。
+
+命令行（在本项目 agent-bridge 目录执行）：
+  python3 bridge_cli.py status
+  python3 bridge_cli.py read --after 0
+  python3 bridge_cli.py send look --wait 3
+
+每次发送前可先保存 status.latest_seq，随后用 read --after 序号读取新增输出。
+send 返回 dispatched=true 仅表示已提交到客户端命令解析器，并不表示服务器执行成功。
+send --wait 3 仅等待三秒采样输出，不保证响应完整。不要自动重试发送失败或超时的指令。
+发送经过客户端命令解析器，因此现有别名、脚本和客户端命令仍会生效。
+
+HTTP 接口：
+  GET  /status
+  GET  /events?after=0
+  POST /command   正文为 UTF-8 单行命令，例如 look
+请求头：Authorization: Bearer <token.txt 内容>
+命令行工具不使用系统的 HTTP_PROXY / HTTPS_PROXY，始终直连本机。
+不允许带 Origin 的浏览器请求；不要将该接口端口映射到公网。
+
+输出字段：session、latest_seq、oldest_seq、truncated、events。
+每条事件含 seq、time_ms、text（纯文本）、raw（可能含 ANSI 控制符）。
+内存保留最近 2000 条事件；客户端重启后 session 改变、序号从头开始。
+truncated=true 表示请求的部分旧事件已被缓冲区淘汰，需要重新同步。
+输出来自官方插件触发器回调，可能含客户端协议片段，也可能受其他触发器影响。
+connected 表示网络连接状态，不等同于角色已经登录。
+
+验证结果：
+- 本地测试通过：鉴权、拒绝浏览器 Origin、中文、原样保留输出、拒绝多行命令、发送和游标回读。
+- 已在 Wine 下原版 1.107 加载，客户端显示 AgentBridge ready。
+- 通过插件发送一次 look，读回 19 条新事件，包含房间标题、描述及出口信息。
+
+源码：src/local/batbridge/AgentBridge.java
+构建：./build.sh（依赖项目 downloads/bat_interfaces.jar 和 Java 8 JDK）
+测试：先用同一 JDK 编译 tests/BridgeHarness.java，再运行 tests/test_bridge.py。
+测试占用同一端口，只能在游戏客户端关闭时运行。
+
+卸载：退出客户端，移走 plugins/agent-bridge.jar，再启动客户端。
+如需轮换令牌：退出客户端，移走 agent-bridge/token.txt，再启动客户端。
+插件目录：
+~/Library/Application Support/BatMUD 1.107 Wine/drive_c/users/admin/batclient/plugins/
