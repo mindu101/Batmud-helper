@@ -37,7 +37,9 @@ sys.path.insert(0, str(HERE.parent / 'pylib'))
 from batbridge.client import BridgeClient, BridgeConnectionError
 from batbridge.lines import clean_lines
 
-MAP_PATH = HERE.parent / 'agent' / 'memory' / 'map.json'
+MAP_PATH = Path(os.environ.get(
+    'BATBRIDGE_MEMORY_DIR',
+    str(HERE.parent / 'agent' / 'memory'))) / 'map.json'
 AUDIT_PATH = Path(os.environ.get(
     'BATBRIDGE_AUDIT',
     Path.home() / 'batclient' / 'agent-bridge' / 'command-log.jsonl'))

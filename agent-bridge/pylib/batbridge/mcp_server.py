@@ -10,6 +10,11 @@ Tools:
     batmud_status()                          bridge connection/cursor state
     batmud_read(after, limit, wait_ms, raw)  clean logical lines (or raw events)
     batmud_send(command, wait_s)             dispatch + collect, 429 surfaced
+    batmud_state()                           hp/sp/ep/cash/exp + room (state.json)
+    find_word(word)                          where a word appeared in the buffer
+    vocab_add(word, meaning_zh, ...)         write a 3-layer vocabulary entry
+    map_route(to, from_room)                 BFS steps to a room (walked edges only)
+    map_rooms(query)                         list known rooms
     kb_search(query, scope, limit)           search game knowledge notes
     kb_read(path)                            read one note (guarded)
     kb_list()                                list note files
@@ -26,10 +31,16 @@ import json
 import os
 import sys
 import traceback
+from pathlib import Path
 
 from . import kb
 from .client import BridgeClient, BridgeError, BridgeConnectionError
 from .lines import clean_lines
+
+# map_route/map_rooms/diary_write 的实现住在 tools/(mapper.py/diary.py)
+_TOOLS_DIR = Path(__file__).resolve().parents[2] / 'tools'
+if _TOOLS_DIR.is_dir() and str(_TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(_TOOLS_DIR))
 
 SERVER_NAME = 'batmud-bridge'
 SERVER_VERSION = '0.1.0'
@@ -91,6 +102,54 @@ TOOLS = [
     {'name': 'kb_list',
      'description': 'List all knowledge note files.',
      'inputSchema': _schema({})},
+    {'name': 'batmud_state',
+     'description': 'Current game state from state.json (needs state_watch.py '
+                    'running): hp/sp/ep current+max, cash, exp, current room. '
+                    'Fields stay null until observed — never fabricated.',
+     'inputSchema': _schema({})},
+    {'name': 'find_word',
+     'description': 'Find where a word appeared in recent game output (for '
+                    'vocabulary entries). Returns matching lines with seq. '
+                    'If not in the buffer, ask the user for the sentence '
+                    'instead of inventing a context.',
+     'inputSchema': _schema({
+         'word': {'type': 'string', 'description': 'the English word to find'},
+     }, ['word'])},
+    {'name': 'vocab_add',
+     'description': 'Record a vocabulary entry into the 3-layer word book '
+                    '(full md entry + English-only txt + bare words.txt). '
+                    'meaning_zh should be the meaning IN THE GAME CONTEXT. '
+                    'After writing, retell the entry to the user in Chinese.',
+     'inputSchema': _schema({
+         'word': {'type': 'string'},
+         'meaning_zh': {'type': 'string', 'description': '中文语境义'},
+         'meaning_en': {'type': 'string', 'description': 'English definition'},
+         'phonetic': {'type': 'string'},
+         'sentence': {'type': 'string', 'description': 'game sentence it appeared in'},
+         'sentence_zh': {'type': 'string', 'description': '整句中文翻译'},
+         'related': {'type': 'string'},
+         'note': {'type': 'string'},
+     }, ['word', 'meaning_zh'])},
+    {'name': 'map_route',
+     'description': 'Steps from the current room to a target room using only '
+                    'edges actually walked (map.json from mapper.py record). '
+                    'Show the steps to the user and get approval before '
+                    'sending any movement command.',
+     'inputSchema': _schema({
+         'to': {'type': 'string', 'description': 'target room title (fuzzy ok)'},
+         'from_room': {'type': 'string', 'description': 'start room (default: latest)'},
+     }, ['to'])},
+    {'name': 'map_rooms',
+     'description': 'List known rooms (visits, walked edges).',
+     'inputSchema': _schema({
+         'query': {'type': 'string', 'description': 'filter by keyword'},
+     })},
+    {'name': 'diary_write',
+     'description': 'Generate/refresh the daily diary section (XP delta, '
+                    'commands, new words, map size, commits).',
+     'inputSchema': _schema({
+         'date': {'type': 'string', 'description': 'YYYY-MM-DD (default: today)'},
+     })},
 ]
 
 
@@ -188,6 +247,125 @@ class McpServer(object):
     def tool_kb_list(self, args):
         return json.dumps(kb.list_notes(), ensure_ascii=False)
 
+    def tool_batmud_state(self, args):
+        from batbridge.state import GameState
+        s = GameState.load()
+        return json.dumps(dict(summary=s.summary_zh(), **s.as_dict()),
+                          ensure_ascii=False)
+
+    def tool_find_word(self, args):
+        word = args.get('word')
+        if not word or not isinstance(word, str):
+            raise ToolError('word is required')
+        try:
+            client = self._bridge()
+            st = client.status()
+            batch = client.read(max(0, st['latest_seq'] - 2000), limit=2000)
+        except BridgeConnectionError as e:
+            raise ToolError('%s — 若用户刚才看到了这个词,请用户把原句发来,'
+                            '不要凭空调用' % e)
+        from batbridge.lines import clean_lines
+        lines, _ = clean_lines(batch['events'])
+        hits = [l for l in lines if word.lower() in l['text'].lower()]
+        if not hits:
+            return json.dumps({'found': False,
+                               'hint': '当前缓冲(2000 条)里没有这个词;'
+                                       '问用户要原句,不要编造出处'},
+                              ensure_ascii=False)
+        return json.dumps({'found': True, 'matches': [
+            {'seq': l['seq_start'], 'kind': l['kind'], 'text': l['text']}
+            for l in hits[-10:]]}, ensure_ascii=False)
+
+    def tool_vocab_add(self, args):
+        from batbridge import vocab
+        word, meaning_zh = args.get('word'), args.get('meaning_zh')
+        if not word or not isinstance(word, str) or not meaning_zh:
+            raise ToolError('word 与 meaning_zh 必填')
+        try:
+            r = vocab.add_entry(
+                word, meaning_zh=meaning_zh,
+                meaning_en=args.get('meaning_en', ''),
+                phonetic=args.get('phonetic', ''),
+                sentence=args.get('sentence', ''),
+                sentence_zh=args.get('sentence_zh', ''),
+                related=args.get('related', ''),
+                note=args.get('note', ''))
+        except ValueError as e:
+            raise ToolError(str(e))
+        return json.dumps(dict(r, note='已写入三层单词本;'
+                                       '请把词条内容用中文向用户复述一遍'),
+                          ensure_ascii=False)
+
+    def tool_map_route(self, args):
+        import mapper
+        to = args.get('to')
+        if not to or not isinstance(to, str):
+            raise ToolError('to is required')
+        state = mapper.MapState.load()
+        if not state.rooms:
+            raise ToolError('map.json 为空:先跑 tools/mapper.py record 走几个房间')
+        to_id = mapper.room_id(to)
+        matches = [rid for rid in state.rooms if rid == to_id or to_id in rid]
+        if not matches:
+            raise ToolError('地图里没有 %r;可用 map_rooms 查已记录的房间' % to)
+        to_id = matches[0]
+        frm = args.get('from_room')
+        from_id = mapper.room_id(frm) if frm else state.latest_room()
+        if from_id not in state.rooms:
+            raise ToolError('起点不在地图里: %r' % frm)
+        steps = state.route(from_id, to_id)
+        if steps is None:
+            raise ToolError('暂时走不到(还没学到这条路):%s -> %s'
+                            % (state.rooms[from_id]['title'],
+                               state.rooms[to_id]['title']))
+        cur, path = from_id, []
+        for i, d in enumerate(steps, 1):
+            cur = state.edges[cur][d]
+            path.append('%d. %s -> %s' % (i, d, state.rooms[cur]['title']))
+        return json.dumps({'from': state.rooms[from_id]['title'],
+                           'to': state.rooms[to_id]['title'],
+                           'steps': steps, 'detail': path,
+                           'note': '展示给用户并取得同意后,逐步发送,'
+                                   '每步读回输出确认房间变化'},
+                          ensure_ascii=False)
+
+    def tool_map_rooms(self, args):
+        import mapper
+        state = mapper.MapState.load()
+        query = (args.get('query') or '').lower()
+        out = []
+        for rid, r in sorted(state.rooms.items(),
+                             key=lambda kv: -kv[1]['visits'])[:50]:
+            if query and query not in r['title'].lower():
+                continue
+            out.append({'title': r['title'], 'visits': r['visits'],
+                        'exits': r['exits'],
+                        'edges': {d: state.rooms[t]['title']
+                                  for d, t in state.edges.get(rid, {}).items()}})
+        return json.dumps({'count': len(state.rooms), 'rooms': out},
+                          ensure_ascii=False)
+
+    def tool_diary_write(self, args):
+        import time as _time
+
+        import diary
+        date = args.get('date') or _time.strftime('%Y-%m-%d')
+        lo, hi = diary.day_bounds(date)
+        cmds = diary.commands_of_day(diary.AUDIT_PATH, lo, hi)
+        try:
+            vocab_text = diary.VOCAB_PATH.read_text(encoding='utf-8')
+        except OSError:
+            vocab_text = ''
+        words = diary.words_of_day(vocab_text, date)
+        rooms, edges = diary.map_snapshot()
+        commits = diary.git_commits(date)
+        exp = diary.exp_of_day(None)
+        section = diary.build_section(date, cmds, words, rooms, edges,
+                                      commits, exp)
+        action = diary.write_diary(section, date)
+        return json.dumps({'action': action, 'section': section},
+                          ensure_ascii=False)
+
     HANDLERS = {
         'batmud_status': tool_status,
         'batmud_read': tool_read,
@@ -195,6 +373,12 @@ class McpServer(object):
         'kb_search': tool_kb_search,
         'kb_read': tool_kb_read,
         'kb_list': tool_kb_list,
+        'batmud_state': tool_batmud_state,
+        'find_word': tool_find_word,
+        'vocab_add': tool_vocab_add,
+        'map_route': tool_map_route,
+        'map_rooms': tool_map_rooms,
+        'diary_write': tool_diary_write,
     }
 
     # ---- JSON-RPC plumbing ----

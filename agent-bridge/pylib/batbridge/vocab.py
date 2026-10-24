@@ -10,12 +10,15 @@ alphabetical insert/dedupe in the txts). load_glossary() returns a
 word -> Chinese meaning map (语境义 preferred) for translation consistency.
 """
 
+import os
 import re
 import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent          # pylib/batbridge
-MEMORY = HERE.parents[1] / 'agent' / 'memory'   # agent-bridge/agent/memory
+# 记忆根目录可用 BATBRIDGE_MEMORY_DIR 覆盖(测试沙箱/多实例)
+MEMORY = Path(os.environ.get('BATBRIDGE_MEMORY_DIR')
+              or HERE.parents[1] / 'agent' / 'memory')
 MD_PATH = MEMORY / 'vocabulary.md'
 TXT_PATH = MEMORY / 'vocabulary.txt'
 WORDS_PATH = MEMORY / 'words.txt'

@@ -6,11 +6,13 @@ persisted to agent/memory/state.json so any tool or MCP client can read
 """
 
 import json
+import os
 import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-STATE_PATH = HERE.parents[1] / 'agent' / 'memory' / 'state.json'
+STATE_PATH = Path(os.environ.get('BATBRIDGE_MEMORY_DIR')
+                  or HERE.parents[1] / 'agent' / 'memory') / 'state.json'
 
 # hp: 586 (586) [] sp: 294 (294) [] ep: 212 (212) [] cash: 16661 [] exp: 19227 []
 STATUS_RE = re.compile(

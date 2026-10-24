@@ -111,7 +111,9 @@ class TestMcpServer(unittest.TestCase):
         resp = self.mcp.request('tools/list')
         names = [t['name'] for t in resp['result']['tools']]
         self.assertEqual(names, ['batmud_status', 'batmud_read', 'batmud_send',
-                                 'kb_search', 'kb_read', 'kb_list'])
+                                 'kb_search', 'kb_read', 'kb_list',
+                                 'batmud_state', 'find_word', 'vocab_add',
+                                 'map_route', 'map_rooms', 'diary_write'])
         for t in resp['result']['tools']:
             self.assertEqual(t['inputSchema']['type'], 'object')
 
@@ -164,6 +166,119 @@ class TestMcpServer(unittest.TestCase):
         self.assertEqual(resp['result'], {})
         resp = self.mcp.request('resources/list')
         self.assertEqual(resp['error']['code'], -32601)
+
+
+class TestNewToolsWithSandbox(unittest.TestCase):
+    """vocab/map/state/diary 工具走沙箱记忆目录,不碰真实文件。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.mem = tempfile.TemporaryDirectory()
+        cls.audit = tempfile.TemporaryDirectory()
+        # 自带一个 harness(独立于 TestMcpServer 的那个,端口相同但串行运行)
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.harness = subprocess.Popen(
+            [str(JAVA), '-Djava.awt.headless=true', '-Dbatbridge.port=%d' % PORT,
+             '-cp', CP, 'BridgeHarness', cls.tmp.name],
+            stdout=subprocess.DEVNULL)
+        tokenfile = pathlib.Path(cls.tmp.name) / 'agent-bridge/token.txt'
+        for _ in range(100):
+            if tokenfile.exists():
+                break
+            time.sleep(.05)
+        # 等中文事件出现(find_word 测试依赖)
+        for _ in range(60):
+            try:
+                from batbridge.client import BridgeClient
+                c = BridgeClient(port=PORT, token=tokenfile.read_text().strip())
+                if any('world' in e['text'] for e in c.read(0)['events']):
+                    break
+            except Exception:
+                pass
+            time.sleep(.1)
+        # 沙箱审计日志:今天一条 look
+        import time as _t
+        today = _t.strftime('%Y-%m-%d')
+        lo = int(_t.mktime(_t.strptime(today, '%Y-%m-%d')) * 1000)
+        pathlib.Path(cls.audit.name, 'command-log.jsonl').write_text(
+            json.dumps({'time_ms': lo + 1000, 'command': 'look',
+                        'after_seq': 0}) + '\n', encoding='utf-8')
+        cls.env = {'BATBRIDGE_PORT': str(PORT),
+                   'BATBRIDGE_TOKEN_FILE': str(tokenfile),
+                   'BATBRIDGE_MEMORY_DIR': cls.mem.name,
+                   'BATBRIDGE_AUDIT': str(
+                       pathlib.Path(cls.audit.name) / 'command-log.jsonl')}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.harness.terminate()
+        cls.harness.wait(timeout=5)
+        cls.tmp.cleanup()
+        cls.mem.cleanup()
+        cls.audit.cleanup()
+
+    def setUp(self):
+        self.mcp = McpProc(self.env)
+        self.mcp.request('initialize', {'protocolVersion': '2025-06-18',
+                                        'capabilities': {}})
+        self.mcp.request('notifications/initialized', notification=True)
+
+    def tearDown(self):
+        self.mcp.close()
+
+    def test_vocab_add_writes_three_layers(self):
+        result, text = self.mcp.call('vocab_add', {
+            'word': 'zombie', 'meaning_zh': '僵尸',
+            'meaning_en': 'a reanimated corpse',
+            'sentence': 'A zombie shambles north.',
+            'sentence_zh': '一只僵尸蹒跚着向北走去。'})
+        self.assertFalse(result.get('isError'), text)
+        md = (pathlib.Path(self.env['BATBRIDGE_MEMORY_DIR'])
+              / 'vocabulary.md').read_text(encoding='utf-8')
+        self.assertIn('### zombie', md)
+        self.assertIn('僵尸', md)
+        words = (pathlib.Path(self.env['BATBRIDGE_MEMORY_DIR'])
+                 / 'words.txt').read_text(encoding='utf-8')
+        self.assertIn('zombie', words.split())
+        # 必填缺失 -> isError
+        result, text = self.mcp.call('vocab_add', {'word': 'x'})
+        self.assertTrue(result['isError'])
+
+    def test_state_and_map_tools(self):
+        _, text = self.mcp.call('batmud_state')
+        payload = json.loads(text)
+        self.assertIsNone(payload['hp'])
+        self.assertIn('位置未知', payload['summary'])
+        result, text = self.mcp.call('map_route', {'to': 'nowhere'})
+        self.assertTrue(result['isError'])            # 空地图如实报错
+        _, text = self.mcp.call('map_rooms', {})
+        self.assertEqual(json.loads(text)['count'], 0)
+
+    def test_find_word_against_harness(self):
+        _, text = self.mcp.call('find_word', {'word': 'world'})
+        payload = json.loads(text)
+        self.assertTrue(payload['found'])
+        self.assertIn('hello', payload['matches'][0]['text'])
+        result, text = self.mcp.call('find_word', {'word': 'zzz_nothing'})
+        payload = json.loads(text)
+        self.assertFalse(payload['found'])
+        self.assertIn('不要编造', payload['hint'])
+
+    def test_diary_write_sandbox(self):
+        _, text = self.mcp.call('diary_write', {})
+        payload = json.loads(text)
+        self.assertIn('look', payload['section'])
+        diary_file = pathlib.Path(self.env['BATBRIDGE_MEMORY_DIR']) / 'diary.md'
+        self.assertTrue(diary_file.exists())
+
+    def test_tools_list_has_all_twelve(self):
+        resp = self.mcp.request('tools/list')
+        names = [t['name'] for t in resp['result']['tools']]
+        self.assertEqual(names, [
+            'batmud_status', 'batmud_read', 'batmud_send',
+            'kb_search', 'kb_read', 'kb_list',
+            'batmud_state', 'find_word', 'vocab_add',
+            'map_route', 'map_rooms', 'diary_write'])
 
 
 class TestMcpWithoutBridge(unittest.TestCase):

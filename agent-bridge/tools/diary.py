@@ -17,6 +17,7 @@
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -26,10 +27,14 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'pylib'))
 
-DIARY_PATH = HERE.parent / 'agent' / 'memory' / 'diary.md'
-MAP_PATH = HERE.parent / 'agent' / 'memory' / 'map.json'
-VOCAB_PATH = HERE.parent / 'agent' / 'memory' / 'vocabulary.md'
-AUDIT_PATH = Path.home() / 'batclient' / 'agent-bridge' / 'command-log.jsonl'
+_MEMORY = Path(os.environ.get('BATBRIDGE_MEMORY_DIR')
+               or HERE.parent / 'agent' / 'memory')
+DIARY_PATH = _MEMORY / 'diary.md'
+MAP_PATH = _MEMORY / 'map.json'
+VOCAB_PATH = _MEMORY / 'vocabulary.md'
+AUDIT_PATH = Path(os.environ.get(
+    'BATBRIDGE_AUDIT',
+    str(Path.home() / 'batclient' / 'agent-bridge' / 'command-log.jsonl')))
 REPO_ROOT = HERE.parents[1]
 
 _EXP_RE = re.compile(r'exp: (\d+)')
