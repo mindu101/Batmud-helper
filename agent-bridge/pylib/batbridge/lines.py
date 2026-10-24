@@ -32,6 +32,9 @@ _ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-
 _BATHOTKEY_RE = re.compile(r'\x1b<\d*([^|]*?)\x1b\|.*?\x1b>\d*', re.DOTALL)
 _BATCODE_RE = re.compile(r'\x1b[<>]\d*|\x1b\|')
 _EXITS_RE = re.compile(r"^Obvious exits?\s+(?:is|are):\s*.+", re.IGNORECASE)
+# 客户端协议噪音:以独立片段出现(无换行),若不丢弃会并进下一行
+# 污染内容(实测 'NoMapSupport' 会与随后的房间标题粘成一行)
+PROTOCOL_NOISE = {'nomapsupport'}
 _CHAT_RE = re.compile(
     r"(?:\b(?:says?|exclaims?|asks?|tells you|chats?|gossips?|auctions?|"
     r"shouts?|whispers?|narrates?|reports?|emotes?)\b[:,\s])", re.IGNORECASE)
@@ -71,6 +74,9 @@ def clean_lines(events, collapse_repeats=True):
     for ev in events:
         stats['events'] += 1
         text = ev.get('text') or ''
+        if text.strip().lower() in PROTOCOL_NOISE:
+            stats['dropped_noise'] = stats.get('dropped_noise', 0) + 1
+            continue                # 丢弃,绝不让它粘进下一行
         seq = ev.get('seq')
         last_time = ev.get('time_ms', last_time)
         if seq_start is None:

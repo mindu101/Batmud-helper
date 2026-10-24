@@ -121,6 +121,17 @@ class TestCleanLines(unittest.TestCase):
         self.assertEqual(lines[0]['repeats'], 3)
         self.assertEqual(stats['dropped_empty'], 1)
 
+    def test_protocol_noise_not_merged_into_next_line(self):
+        # 真实场景(2026-10-24 seq 38-39):NoMapSupport 无换行,
+        # 曾与随后的房间标题粘成 'NoMapSupportNorthern gatehouse.'
+        lines, stats = clean_lines([ev(38, 'NoMapSupport'),
+                                    ev(39, 'Northern gatehouse.\n'),
+                                    ev(40, 'Obvious exit is: north.\n')])
+        self.assertEqual([l['text'] for l in lines],
+                         ['Northern gatehouse.', 'Obvious exit is: north.'])
+        self.assertEqual(lines[0]['kind'], 'room_title?')
+        self.assertEqual(stats.get('dropped_noise'), 1)
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
