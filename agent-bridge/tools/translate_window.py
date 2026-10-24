@@ -33,15 +33,17 @@ from batbridge.lines import clean_lines
 API_URL = os.environ.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').rstrip('/') + '/chat/completions'
 MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-flash')  # DeepSeek-V4.1-Flash
 BATCH_QUIET_S = 1.2     # 无新行持续多久就翻译
-MAX_BATCH = 15          # 单次请求最多行数
+MAX_BATCH = 8           # 单次请求最多行数(小批次更快返回,不易超时)
+MAX_PENDING = 45        # 失败重试期间最多积压的行数,超出则最旧的以"暂缺"落地
 CACHE_MAX = 1000        # 行级翻译缓存上限(FIFO 淘汰)
-API_TIMEOUT = 20
+API_TIMEOUT = 30
 BACKOFF_S = 5           # API 失败后的退避
 
 SYSTEM_PROMPT = (
     '你是文字网游 BatMUD 的画面翻译助手。用户给你一个 JSON 数组,'
     '每项是一行游戏英文原文。把每一行翻成自然的简体中文,保留人名/地名,'
     '游戏黑话给通行中文说法。若输入末尾附有"术语表",译名必须与术语表完全一致。'
+    '译文保持简洁,不要添加注释或原文。'
     '只输出一个 JSON 数组,第 i 项对应第 i 行的译文,'
     '不要输出任何其他文字或代码块标记。'
 )
@@ -233,9 +235,10 @@ def run(client, out, key, post=None, after=None, sleep=time.sleep, stop=None,
         if not pending:
             return
         if time.time() < api_down_until:
-            for entry in pending:
-                emit(out, '(翻译服务暂不可用) ' + entry['text'], entry['text'])
-            del pending[:]
+            # 退避中:整批保留待重试;积压过多时最旧的先落地,避免窗口滞后
+            while len(pending) > MAX_PENDING:
+                entry = pending.pop(0)
+                emit(out, '(翻译暂缺) ' + entry['text'], entry['text'])
             return
         texts = [e['text'] for e in pending]
         try:
@@ -244,12 +247,10 @@ def run(client, out, key, post=None, after=None, sleep=time.sleep, stop=None,
                                     on_usage=usage.add)
         except Exception as e:
             api_down_until = time.time() + BACKOFF_S
-            for entry in pending:
-                emit(out, '(翻译暂缺:%s)' % type(e).__name__, entry['text'])
-            del pending[:]
-            out.write('— 翻译服务异常,退避 %ds:%s\n' % (BACKOFF_S, e))
+            out.write('— 翻译服务异常(%s),保留 %d 行待重试,退避 %ds:%s\n'
+                      % (type(e).__name__, len(pending), BACKOFF_S, e))
             out.flush()
-            return
+            return  # 不丢批次:退避结束后原批重试
         for entry, zh in zip(pending, translations):
             cache.put(entry['text'], zh)
             emit(out, zh, entry['text'])
@@ -284,8 +285,7 @@ def run(client, out, key, post=None, after=None, sleep=time.sleep, stop=None,
         quiet = time.time() - last_new_ts >= BATCH_QUIET_S
         if pending and (quiet or len(pending) >= MAX_BATCH):
             flush_pending()
-        else:
-            sleep(0.2)
+        sleep(0.2)  # 每轮固定小睡:退避挂起期间时钟/节奏也能推进
 
 
 def main():

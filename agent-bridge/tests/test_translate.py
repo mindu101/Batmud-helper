@@ -165,23 +165,46 @@ class TestRunLoop(unittest.TestCase):
         # 用量被统计(1 次成功调用)
         self.assertEqual(usage.totals['calls'], 1)
 
-    def test_api_failure_shows_original_and_backs_off(self):
+    def test_api_failure_holds_batch_then_recovers(self):
+        """失败不丢批次:退避期间整批挂起,恢复后原批补翻。"""
         calls = []
 
         def post(url, payload, key):
             calls.append(1)
-            raise OSError('connection refused')
+            if len(calls) == 1:
+                raise OSError('connection refused')
+            raw = payload['messages'][1]['content']
+            n = len(json.loads(raw.split('\n术语表:')[0]))
+            return {'choices': [{'message': {'content': json.dumps(['译%d' % i for i in range(n)])}}]}
 
-        batches = [{'events': [ev(1, 'A line.\n')]}]
-        client = FakeClient(batches + [{'events': []}] * 8)
+        empty = {'events': []}
+        batch1 = {'events': [ev(1, 'A line.\n'), ev(2, 'B line.\n')]}
+        client = FakeClient([batch1] + [empty] * 45)   # ~9s 假时钟:覆盖 1.2s 安静 + 5s 退避
         out = io.StringIO()
         tw.run(client, out, 'k', post=post, usage=self.usage_sandbox(),
-               sleep=self.ft.advance, stop=self.make_stop(12))
+               sleep=self.ft.advance, stop=self.make_stop(46))
         text = out.getvalue()
-        self.assertIn('翻译暂缺', text)
-        self.assertIn('A line.', text)   # 原文始终可见
-        self.assertIn('退避', text)
-        self.assertEqual(len(calls), 1)  # 退避期间不重试同一批
+        self.assertEqual(len(calls), 2)               # 失败一次,退避后重试成功
+        self.assertIn('保留 2 行待重试', text)        # 失败时批次被挂起而非丢弃
+        self.assertIn('中│ 译0', text)
+        self.assertIn('中│ 译1', text)
+        self.assertNotIn('翻译暂缺', text)            # 这批没有丢行
+
+    def test_pending_overflow_lands_as_untranslated(self):
+        """长时间不可用时,积压超过上限的最旧行以"暂缺"落地,内存有界。"""
+        def post(url, payload, key):
+            raise OSError('down')
+
+        empty = {'events': []}
+        flood = {'events': [ev(i, 'Flood line %d.\n' % i) for i in range(1, 51)]}
+        client = FakeClient([flood] + [empty] * 12)
+        out = io.StringIO()
+        tw.run(client, out, 'k', post=post, usage=self.usage_sandbox(),
+               sleep=self.ft.advance, stop=self.make_stop(13))
+        text = out.getvalue()
+        self.assertEqual(text.count('翻译暂缺'), 5)   # 50 - 45 = 5 行落地
+        self.assertIn('Flood line 1.', text)          # 最旧的先落地,原文可见
+        self.assertNotIn('Flood line 50', text)       # 其余仍在待重试
 
 
 if __name__ == '__main__':
