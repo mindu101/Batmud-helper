@@ -120,6 +120,29 @@ def clean_lines(events, collapse_repeats=True):
     return lines, stats
 
 
+def find_room_title(window):
+    """在一段跨批的行窗口里找房间标题。
+
+    批次边界可能把标题与出口行切进不同的读取里(lines.clean_lines 的
+    单批启发式因此会失手——实测把紧邻出口的"木门"行误判成标题)。
+    这里改用更稳的规则:从上一个 exits 行之后的段落开头向后找,
+    取第一个"短且不像句子延续"的行作为标题。
+    """
+    start = 0
+    for i in range(len(window) - 2, -1, -1):
+        if window[i]['kind'] == 'exits':
+            start = i + 1
+            break
+    for entry in window[start:-1]:          # 最后一个是 exits 行本身
+        text = entry['text']
+        if (entry['kind'] in ('text', 'room_title?')
+                and len(text) <= _TITLE_MAX_LEN
+                and not text.endswith((',', ';', ',')) and text.strip()):
+            if text[0].isupper() or not text[0].isalpha():
+                return text
+    return None
+
+
 def render(lines):
     """Compact text rendering for agents and humans."""
     out = []

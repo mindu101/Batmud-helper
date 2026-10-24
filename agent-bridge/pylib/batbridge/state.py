@@ -10,6 +10,8 @@ import os
 import re
 from pathlib import Path
 
+from .lines import find_room_title
+
 HERE = Path(__file__).resolve().parent
 STATE_PATH = Path(os.environ.get('BATBRIDGE_MEMORY_DIR')
                   or HERE.parents[1] / 'agent' / 'memory') / 'state.json'
@@ -68,9 +70,20 @@ class GameState(object):
 
     # ---- ingestion ----
 
+    WINDOW = 15   # 跨批行窗口:标题探测不受读取批次边界影响
+
+    def __init__(self):
+        self.hp = self.hp_max = self.sp = self.sp_max = None
+        self.ep = self.ep_max = self.cash = self.exp = None
+        self.room = None
+        self.updated_ms = None
+        self.seq = None
+        self._recent = []
+
     def update_from_lines(self, lines):
         """吃进 clean_lines 的输出;返回是否有变化。"""
         changed = False
+        self._recent = (self._recent + list(lines))[-self.WINDOW:]
         for i, entry in enumerate(lines):
             text = entry['text']
             st = parse_status(text) if text.startswith('hp: ') else None
@@ -81,12 +94,11 @@ class GameState(object):
                         changed = True
                 continue
             if entry['kind'] == 'exits':
-                for cand in reversed(lines[max(0, i - 10):i]):
-                    if cand['kind'] == 'room_title?':
-                        if self.room != cand['text']:
-                            self.room = cand['text']
-                            changed = True
-                        break
+                window = self._recent[:len(self._recent) - (len(lines) - i - 1)]
+                title = find_room_title(window)   # 窗口尾已对齐当前 exits 行
+                if title and self.room != title:
+                    self.room = title
+                    changed = True
         if lines:
             last = lines[-1]
             self.updated_ms = last.get('time_ms')

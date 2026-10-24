@@ -90,6 +90,29 @@ class TestTracker(unittest.TestCase):
         ec = tr.on_lines([dict(l, time_ms=30000) for l in STREET])[1]
         self.assertFalse(ec)
 
+    def test_title_detection_survives_batch_split(self):
+        # 2026-10-24 实测故障复刻:标题与出口行被切进两次读取,
+        # 单批启发式把紧邻出口的"木门"行误判为标题。
+        # 修复:跨批滚动窗口 + 段落开头找标题。
+        st, tr = self.make()
+        batch1 = [  # 第一次读:标题+描述
+            line(39, 1000, 'Northern gatehouse.', 'room_title?'),
+            line(40, 1000, 'You are in the northern gatehouse. There is a portal here,', 'text'),
+        ]
+        batch2 = [  # 第二次读:描述尾+门+出口
+            line(43, 1001, 'closed and locked, so the only way out is south.', 'text'),
+            line(44, 1001, 'Sturdy wooden gate (closed) leads north.', 'text'),
+            line(45, 1002, 'Obvious exit is: south.', 'exits'),
+        ]
+        tr.on_lines(batch1)
+        rc, _ = tr.on_lines(batch2)
+        self.assertTrue(rc)
+        rid = mapper.room_id('Northern gatehouse.')
+        self.assertIn(rid, st.rooms)
+        self.assertNotIn(mapper.room_id('Sturdy wooden gate (closed) leads north.'),
+                         st.rooms)
+        self.assertEqual(st.rooms[rid]['exits'], ['south'])
+
     def test_route_bfs_and_unreachable(self):
         st, tr = self.make()
         tr.on_lines(GATEHOUSE)

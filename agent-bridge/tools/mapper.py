@@ -35,7 +35,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'pylib'))
 
 from batbridge.client import BridgeClient, BridgeConnectionError
-from batbridge.lines import clean_lines
+from batbridge.lines import clean_lines, find_room_title
 
 MAP_PATH = Path(os.environ.get(
     'BATBRIDGE_MEMORY_DIR',
@@ -167,12 +167,19 @@ class AuditTail(object):
 
 
 class RoomTracker(object):
-    """把行流 + 移动命令流汇成房间/边状态。"""
+    """把行流 + 移动命令流汇成房间/边状态。
+
+    维护跨批的滚动行窗口:标题探测不受读取批次边界影响
+    (单批启发式实测会把紧邻出口行的短句误判为标题)。
+    """
+
+    WINDOW = 15
 
     def __init__(self, state):
         self.state = state
         self.current = None
         self.pending_moves = []   # [(time_ms, dir)]
+        self.recent = []          # 最近 N 行(跨批)
 
     def on_move(self, time_ms, direction):
         self.pending_moves.append((time_ms, direction))
@@ -180,20 +187,18 @@ class RoomTracker(object):
     def on_lines(self, lines):
         """返回 (rooms_changed, edges_changed)。"""
         rc = ec = False
-        # 先丢弃过期移动(超时没等到新房间的,多半是撞墙/失败)
         now = max((l.get('time_ms') or 0) for l in lines) if lines else 0
         if now:
             self.pending_moves = [m for m in self.pending_moves
                                   if now - m[0] <= 2 * MOVE_WINDOW_MS]
+        self.recent = (self.recent + lines)[-self.WINDOW:]
         for i, entry in enumerate(lines):
             if entry['kind'] != 'exits':
                 continue
-            title = None
-            for cand in reversed(lines[max(0, i - 10):i]):
-                if cand['kind'] == 'room_title?':
-                    title = cand['text']
-                    break
             exits = parse_exits(entry['text'])
+            # 在跨批窗口里找标题(窗口已含当前 exits 行,窗口尾对齐到它)
+            window = self.recent[:len(self.recent) - (len(lines) - i - 1)]
+            title = find_room_title(window)
             if not title:
                 # 有出口无标题:把出口并进当前房间,不动房间指针
                 if self.current and exits:
