@@ -1,4 +1,4 @@
-BatMUD AgentBridge 0.2.0
+BatMUD AgentBridge 0.3.0
 
 已安装到 BatMUD 客户端的 plugins 目录(本机原生 macOS 客户端:
 ~/batclient/plugins/agent-bridge.jar)。每次启动客户端时自动加载。
@@ -24,6 +24,20 @@ send --wait 3 会在 3 秒内长轮询新输出,一有新事件立即返回;不�
 发送经过客户端命令解析器,因此现有别名、脚本和客户端命令仍会生效。
 连不上时命令行会提示检查客户端是否已启动。
 
+命令限速(0.3.0):
+令牌桶容量 3 条(突发 3 条),之后每 3000ms 恢复 1 条。
+超限返回 429 {"error":"rate_limited","dispatched":false,"retry_after_ms":N}
+并带 Retry-After 头。被限速的命令【没有】发进游戏,等 retry_after_ms 后
+重试是安全的——这与 504(派发超时、结果未知、不要盲目重试)不同。
+status 里的 rate_burst / rate_refill_ms 就是当前配置。
+
+命令审计日志(0.3.0):
+每条实际派发的命令按 JSONL 追加写到
+~/batclient/agent-bridge/command-log.jsonl
+(字段: time_ms、session、command、after_seq)。
+被 400/401/415/429 拒绝的命令不会写入——日志只记真正进入游戏的命令,
+用于事后完整回放 agent 到底发了什么。文件不自动轮转,想清空直接删除。
+
 HTTP 接口:
   GET  /status
   GET  /events?after=0&limit=500&wait_ms=0
@@ -34,7 +48,8 @@ HTTP 接口:
 POST /command 若带 Content-Type,只允许 text/* 或
 application/x-www-form-urlencoded(curl -d 与 urllib 的默认值),否则 415;
 这样能拦住 agent 误把 JSON 体当命令发进游戏。
-已知路径用错方法返回 405;未知路径返回 404;非法查询参数返回 400 而非静默忽略。
+已知路径用错方法返回 405;未知路径返回 404;非法查询参数返回 400 而非静默忽略;
+命令超限返回 429(见上方限速说明)。
 
 /events 参数:
   after    上次读到的 seq,只返回其后的新事件(旧事件在前)。
@@ -47,6 +62,15 @@ more=true 表示还有未返回的事件,应立即用本批最后一条的 seq �
 truncated=true 表示请求的部分旧事件已被缓冲区淘汰,需要重新同步。
 status 另含 oldest_seq,可用来判断游标是否仍然有效。
 connected 表示网络连接状态,不等同于角色已经登录。
+
+验证结果(0.3.0,2026-10-24):
+- headless 集成测试两轮全部通过:第一轮(放大限速桶)覆盖 0.2.0 全部断言
+  外加审计日志内容校验;第二轮(桶=2、恢复=400ms)确定性验证限速:
+  突发 2 条后第 3 条 429、retry_after_ms 与 Retry-After 头、被拒命令
+  不派发(commands_sent 不变)、等待恢复后同一命令可重试、审计与派发一致。
+- 已在真实 BatMUD 客户端加载 0.3.0 实测:连发 4 条 look,前 3 条派发并
+  确认被游戏执行(读回房间输出),第 4 条 429 且 retry_after_ms=2971,
+  审计日志恰好 3 条 look。
 
 验证结果(0.2.0,2026-10-24):
 - headless 集成测试(tests/test_bridge.py)全部通过:鉴权、拒绝浏览器 Origin、
@@ -66,8 +90,11 @@ connected 表示网络连接状态,不等同于角色已经登录。
 测试:先 ./build.sh,再 python3 tests/test_bridge.py。
       harness 在 18766 端口运行(经 -Dbatbridge.port 指定),
       因此游戏客户端开着也能跑测试;正式客户端仍固定用 18765。
+      限速参数也可用 -Dbatbridge.rate.burst / -Dbatbridge.rate.refill_ms
+      覆盖(仅测试用,客户端默认 3 / 3000)。
       测试会按需自动编译 tests/BridgeHarness.java。
 
 卸载:退出客户端,移走 ~/batclient/plugins/agent-bridge.jar,再启动客户端。
 如需轮换令牌:退出客户端,移走 ~/batclient/agent-bridge/token.txt,再启动客户端。
-回滚:旧版 0.1.0 已备份为 agent-bridge.installed-backup.jar,复制回插件目录即可。
+回滚:上一个线上版本已备份为 agent-bridge.installed-backup.jar(当前为
+0.2.0),复制回插件目录并重启客户端即可;更早版本在 git 历史里。

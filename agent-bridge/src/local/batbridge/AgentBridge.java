@@ -28,7 +28,12 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
     private static final int CAPACITY = 2000;      // ring buffer of recent events
     private static final int DEFAULT_LIMIT = 500;  // events per /events response
     private static final int MAX_WAIT_MS = 10000;  // longest /events long poll
-    private static final String VERSION = "0.2.0";
+    // Command rate limit: burst of RATE_BURST commands, then one new token per
+    // RATE_REFILL_MS. Rejected commands are NOT dispatched. Test overrides via
+    // system properties; production defaults are 3 and 3000.
+    private static final long RATE_BURST = Math.max(1, Long.getLong("batbridge.rate.burst", 3));
+    private static final long RATE_REFILL_MS = Math.max(1, Long.getLong("batbridge.rate.refill_ms", 3000));
+    private static final String VERSION = "0.3.0";
 
     private final Deque<String> events = new ArrayDeque<String>();
     private long seq = 0, commands = 0;
@@ -37,6 +42,9 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
     private ServerSocket server;
     private ExecutorService pool;
     private String token;
+    private Path auditLog;
+    private double rateTokens = RATE_BURST;
+    private long rateLastMs = System.currentTimeMillis();
     private final String session = UUID.randomUUID().toString();
 
     public String getName() { return "AgentBridge"; }
@@ -57,6 +65,7 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
         try {
             Path dir = Paths.get(getBaseDirectory(), "agent-bridge");
             Files.createDirectories(dir);
+            auditLog = dir.resolve("command-log.jsonl");
             Path key = dir.resolve("token.txt");
             if (Files.exists(key)) {
                 token = new String(Files.readAllBytes(key), StandardCharsets.UTF_8).trim();
@@ -110,7 +119,9 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
                 + ",\"connected\":" + getNet().isConnected()
                 + ",\"latest_seq\":" + seq
                 + ",\"oldest_seq\":" + (seq - events.size() + 1)
-                + ",\"commands_sent\":" + commands + "}";
+                + ",\"commands_sent\":" + commands
+                + ",\"rate_burst\":" + RATE_BURST
+                + ",\"rate_refill_ms\":" + RATE_REFILL_MS + "}";
     }
 
     /**
@@ -255,6 +266,15 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
             if (command.isEmpty() || command.length() > 500 || command.matches("(?s).*[\\x00-\\x1f\\x7f].*")) {
                 reply(s, 400, "{\"error\":\"single_line_required\"}"); return;
             }
+            // Rate limit BEFORE dispatch: a rejected command never reached the
+            // game, so the client may safely retry after retry_after_ms.
+            long retryMs = acquireRateToken();
+            if (retryMs > 0) {
+                reply(s, 429, "{\"error\":\"rate_limited\",\"dispatched\":false,\"retry_after_ms\":" + retryMs
+                        + ",\"burst\":" + RATE_BURST + ",\"refill_ms\":" + RATE_REFILL_MS + "}",
+                        "Retry-After: " + ((retryMs + 999) / 1000) + "\r\n");
+                return;
+            }
             final long before; synchronized (this) { before = seq; }
             FutureTask<Boolean> task = new FutureTask<Boolean>(new Callable<Boolean>() { public Boolean call() {
                 if (!getNet().isConnected()) return false;
@@ -265,6 +285,7 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
             SwingUtilities.invokeLater(task);
             try {
                 if (!task.get(5, TimeUnit.SECONDS)) { reply(s, 409, "{\"error\":\"disconnected_before_send\"}"); return; }
+                audit(command, before);
                 reply(s, 200, "{\"dispatched\":true,\"after_seq\":" + before + ",\"session\":" + quote(session) + "}");
             } catch (TimeoutException e) {
                 task.cancel(false);
@@ -280,6 +301,31 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
         reply(s, 404, "{\"error\":\"not_found\"}");
     }
 
+    /**
+     * Token bucket for /command. Returns 0 after consuming one token, or the
+     * milliseconds to wait for the next token without consuming anything.
+     */
+    private synchronized long acquireRateToken() {
+        long now = System.currentTimeMillis();
+        rateTokens = Math.min((double) RATE_BURST, rateTokens + (double) (now - rateLastMs) / RATE_REFILL_MS);
+        rateLastMs = now;
+        if (rateTokens >= 1.0) { rateTokens -= 1.0; return 0; }
+        return (long) Math.ceil((1.0 - rateTokens) * RATE_REFILL_MS);
+    }
+
+    /** Appends every dispatched command to command-log.jsonl for later replay. */
+    private void audit(String command, long beforeSeq) {
+        if (auditLog == null) return;
+        String line = "{\"time_ms\":" + System.currentTimeMillis() + ",\"session\":" + quote(session)
+                + ",\"command\":" + quote(command) + ",\"after_seq\":" + beforeSeq + "}\n";
+        try {
+            Files.write(auditLog, line.getBytes(StandardCharsets.UTF_8),
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException ignored) {
+            // Auditing must never break or delay a dispatch.
+        }
+    }
+
     private static String reason(int code) {
         switch (code) {
             case 200: return "OK";
@@ -291,18 +337,22 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
             case 409: return "Conflict";
             case 411: return "Length Required";
             case 415: return "Unsupported Media Type";
+            case 429: return "Too Many Requests";
             case 503: return "Service Unavailable";
             case 504: return "Gateway Timeout";
             default: return "Error";
         }
     }
 
-    private void reply(Socket s, int code, String json) throws IOException {
+    private void reply(Socket s, int code, String json) throws IOException { reply(s, code, json, null); }
+
+    private void reply(Socket s, int code, String json, String extraHeaders) throws IOException {
         byte[] body = json.getBytes(StandardCharsets.UTF_8);
         OutputStream out = s.getOutputStream();
         out.write(("HTTP/1.1 " + code + " " + reason(code)
-                + "\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\nContent-Length: "
-                + body.length + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+                + "\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n"
+                + (extraHeaders == null ? "" : extraHeaders)
+                + "Content-Length: " + body.length + "\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
         out.write(body);
         out.flush();
     }
