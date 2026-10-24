@@ -116,17 +116,13 @@ class TestRunLoop(unittest.TestCase):
         text = out.getvalue()
         # 状态行走本地格式化,不进 API 批
         self.assertIn('血 100 | 法 50 | 精 9', text)
-        # 终端只输出中文:英文原文不再出现
-        self.assertNotIn('Iron portcullis', text)
         self.assertNotIn('hp: 100', text)
         # 首批两行一次请求;第二批的重复行命中缓存,不产生第二次请求
         self.assertEqual(calls, [['Iron portcullis (closed) leads south.',
                                   'You feel hungry.']])
-        self.assertIn('译0', text)
-        self.assertIn('译1', text)
-        # 每条输出前有一个空行
-        self.assertIn('\n\n译0', text)
-        self.assertIn('\n\n译1', text)
+        self.assertIn('中│ 译0', text)
+        self.assertIn('中│ 译1', text)
+        self.assertEqual(text.count('EN│ Iron portcullis'), 2)
 
     def test_api_failure_shows_original_and_backs_off(self):
         calls = []
@@ -142,7 +138,7 @@ class TestRunLoop(unittest.TestCase):
                sleep=self.ft.advance, stop=self.make_stop(12))
         text = out.getvalue()
         self.assertIn('翻译暂缺', text)
-        self.assertIn('A line.', text)   # 兜底:失败时显示原文,避免完全没内容
+        self.assertIn('A line.', text)   # 原文始终可见
         self.assertIn('退避', text)
         self.assertEqual(len(calls), 1)  # 退避期间不重试同一批
 
