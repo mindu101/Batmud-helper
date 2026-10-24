@@ -31,7 +31,7 @@ from batbridge.client import BridgeClient, BridgeConnectionError
 from batbridge.lines import clean_lines
 
 API_URL = os.environ.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').rstrip('/') + '/chat/completions'
-MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-chat')
+MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-flash')  # DeepSeek-V4.1-Flash
 BATCH_QUIET_S = 1.2     # 无新行持续多久就翻译
 MAX_BATCH = 15          # 单次请求最多行数
 CACHE_MAX = 1000        # 行级翻译缓存上限(FIFO 淘汰)
@@ -101,13 +101,28 @@ def call_api(lines, key, post=None):
     return result
 
 
+def _make_opener():
+    """直连(不走系统代理);有 certifi 就带上其 CA 包
+    (python.org 的 macOS Python 3.8 不带系统证书,curl 正常而 urllib 报
+    self signed certificate in certificate chain 即此因)。"""
+    handlers = [urllib.request.ProxyHandler({})]
+    try:
+        import ssl
+
+        import certifi
+        handlers.append(urllib.request.HTTPSHandler(
+            context=ssl.create_default_context(cafile=certifi.where())))
+    except ImportError:
+        pass
+    return urllib.request.build_opener(*handlers)
+
+
 def _http_post_json(url, payload, key):
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode('utf-8'),
         headers={'Authorization': 'Bearer ' + key,
                  'Content-Type': 'application/json'})
-    with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(
-            req, timeout=API_TIMEOUT) as res:
+    with _make_opener().open(req, timeout=API_TIMEOUT) as res:
         return json.loads(res.read().decode('utf-8'))
 
 

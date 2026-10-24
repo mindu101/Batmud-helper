@@ -52,6 +52,14 @@ status 新增 persisting 字段显示当前开关。删除 persist.txt 并重启
 Python 侧配套:pylib/batbridge(lines 行重组/过滤、kb 知识库检索、
 client 客户端库、mcp_server MCP 服务),tests/ 下各有对应测试;
 MCP 已注册到本仓库 .zcode/config.json(工作区作用域,本会话项目自动连接)。
+副驾驶套件:agent-bridge/agent/(AGENTS.md 加载说明、fingerprint.md
+行为指纹、memory/ 短期+长期记忆+单词本+地图+日记、refresh.py 快照刷新)。
+任何 agent 从仓库根 AGENTS.md 进入即可接班;根 AGENTS.md 是入口。
+运行时四件套(agent-bridge/tools/):translate_window.py 双语跟随窗
+(DeepSeek API,key 读 DEEPSEEK_API_KEY 或 ~/.deepseek_api_key)、
+mapper.py 房间地图记录与寻路(route/rooms/record/stats)、
+watchdog.py 掉线看门狗(macOS 通知,--relaunch 可自动拉起客户端)、
+diary.py 每日小结;各有对应测试(tests/test_*.py)。
 
 HTTP 接口:
   GET  /status

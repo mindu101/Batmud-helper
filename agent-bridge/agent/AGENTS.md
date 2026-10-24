@@ -47,6 +47,15 @@ python3 agent-bridge/agent/refresh.py
 6. 会话结束前:跑 `refresh.py`,并更新 short-term 的目标/待办;
    出现了新的持久事实(新地图、新规则、新黑话)就写进 long-term。
 
+## 开玩四件套(工具都在 agent-bridge/tools/)
+
+游戏会话开始时,建议按需开起(各自独立终端,互不干扰):
+1. `translate_window.py` 双语跟随窗(需 DEEPSEEK_API_KEY;
+   环境变量或 ~/.deepseek_api_key)
+2. `mapper.py record` 地图记录(玩的时候顺手攒地图)
+3. `watchdog.py [--relaunch]` 掉线看门狗(通知;可选自动拉起客户端)
+4. 收工跑 `diary.py` 生成当天日记(agent/memory/diary.md)
+
 ## 导航工作流(用户说"带我去 X 房间 / 去 X 做点事")
 
 数据:`agent/memory/map.json`(房间库 + 走过的边),由
