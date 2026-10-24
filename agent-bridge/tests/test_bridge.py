@@ -1,32 +1,153 @@
-import pathlib,subprocess,tempfile,time,urllib.request,urllib.error,json
-root=pathlib.Path(__file__).resolve().parents[2]
-java=next((root/'runtime').glob('*/Contents/Home/bin/java'))
-opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+#!/usr/bin/env python3
+"""Integration tests for the AgentBridge plugin.
+
+Loads the real plugin class into a headless harness and exercises the HTTP
+API on side port 18766, so it can run while the real game client holds 18765.
+Run ./build.sh first.
+"""
+import json, os, pathlib, socket, subprocess, tempfile, threading, time
+import urllib.request, urllib.error
+
+root = pathlib.Path(__file__).resolve().parents[2]
+port_dir = root / 'agent-bridge'
+
+def find_java():
+    candidates = []
+    if os.environ.get('BAT_JDK'):
+        candidates.append(pathlib.Path(os.environ['BAT_JDK']))
+    if (root / 'runtime').is_dir():
+        candidates += sorted((root / 'runtime').glob('*/Contents/Home'))
+    for c in candidates:
+        if (c / 'bin' / 'java').exists():
+            return c / 'bin' / 'java'
+    return pathlib.Path(subprocess.check_output(['/usr/libexec/java_home']).decode().strip()) / 'bin' / 'java'
+
+java = find_java()
+api = root / 'downloads/bat_interfaces.jar'
+api_cp = api if api.exists() else port_dir / 'build-stubs-compiled'
+cp = ':'.join(str(x) for x in [api_cp, port_dir / 'build', port_dir / 'tests'])
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+# Compile the harness if it is missing or older than its source.
+harness_src = port_dir / 'tests' / 'BridgeHarness.java'
+harness_cls = port_dir / 'tests' / 'BridgeHarness.class'
+if not harness_cls.exists() or harness_cls.stat().st_mtime < harness_src.stat().st_mtime:
+    subprocess.check_call([str(java.parent / 'javac'), '-cp',
+                           ':'.join(str(x) for x in [api_cp, port_dir / 'build']),
+                           '-d', str(port_dir / 'tests'), str(harness_src)])
+
+# Use a side port so tests can run while the real game client holds 18765.
+TEST_PORT = 18766
+BASE = 'http://127.0.0.1:%d' % TEST_PORT
+
 with tempfile.TemporaryDirectory() as temp:
- p=subprocess.Popen([str(java),'-Djava.awt.headless=true','-cp',':'.join(str(root/x) for x in ['downloads/bat_interfaces.jar','agent-bridge/build','agent-bridge/tests']),'BridgeHarness',temp],stdout=subprocess.DEVNULL)
- try:
-  tokenfile=pathlib.Path(temp)/'agent-bridge/token.txt'
-  for _ in range(100):
-   if tokenfile.exists():break
-   time.sleep(.05)
-  token=tokenfile.read_text()
-  def req(path,body=None,auth=True,extra=None):
-   h={'Authorization':'Bearer '+token} if auth else {}
-   h.update(extra or {})
-   r=urllib.request.Request('http://127.0.0.1:18765'+path,data=body,headers=h)
-   try:
-    with opener.open(r,timeout=8) as x:return x.status,json.load(x)
-   except urllib.error.HTTPError as e:return e.code,json.load(e)
-  for _ in range(20):
-   try: status=req('/status');break
-   except OSError:time.sleep(.05)
-  assert status[0]==200
-  assert req('/status',auth=False)[0]==401
-  assert req('/status',extra={'Origin':'https://example.com'})[0]==403
-  initial=req('/events?after=0')[1];assert '中文' in initial['events'][0]['text']
-  assert req('/command',b'look\nscore')[0]==400
-  sent=req('/command',b'look');assert sent[0]==200 and sent[1]['dispatched']
-  events=req('/events?after='+str(sent[1]['after_seq']))[1]['events'];assert any(e['text']=='ROOM: look' for e in events)
-  assert req('/status')[1]['commands_sent']==1
-  print('PASS: auth, browser-origin rejection, Unicode output, input preservation, multiline rejection, command dispatch and cursor readback')
- finally:p.terminate();p.wait(timeout=5)
+    p = subprocess.Popen([str(java), '-Djava.awt.headless=true',
+                          '-Dbatbridge.port=%d' % TEST_PORT,
+                          '-cp', cp, 'BridgeHarness', temp],
+                         stdout=subprocess.DEVNULL)
+    try:
+        tokenfile = pathlib.Path(temp) / 'agent-bridge/token.txt'
+        for _ in range(100):
+            if tokenfile.exists():
+                break
+            time.sleep(.05)
+        token = tokenfile.read_text()
+
+        def req(path, body=None, auth=True, extra=None, timeout=8):
+            h = {'Authorization': 'Bearer ' + token} if auth else {}
+            h.update(extra or {})
+            r = urllib.request.Request(BASE + path, data=body, headers=h)
+            try:
+                with opener.open(r, timeout=timeout) as x:
+                    return x.status, json_load(x)
+            except urllib.error.HTTPError as e:
+                return e.code, json_load(e)
+
+        def json_load(x):
+            return json.loads(x.read().decode())
+
+        status = None
+        for _ in range(40):
+            try:
+                status = req('/status')
+                break
+            except OSError:
+                time.sleep(.05)
+        assert status and status[0] == 200, status
+        assert status[1]['version'] == '0.2.0' and 'oldest_seq' in status[1], status
+
+        # auth, browser-origin rejection, unknown path, wrong methods
+        assert req('/status', auth=False)[0] == 401
+        assert req('/status', extra={'Origin': 'https://example.com'})[0] == 403
+        assert req('/nope')[0] == 404
+        assert req('/status', body=b'')[0] == 405
+        assert req('/command')[0] == 405
+
+        # unicode output and input preservation (the harness fires this after startup)
+        initial = None
+        for _ in range(80):
+            initial = req('/events?after=0')[1]
+            if initial['events']:
+                break
+            time.sleep(.05)
+        assert initial['events'] and '中文' in initial['events'][0]['text']
+        assert initial['more'] is False
+
+        # command validation
+        assert req('/command', b'look\nscore')[0] == 400                    # multiline
+        assert req('/command', b'')[0] == 400                               # empty body (Content-Length: 0)
+        assert req('/command', b'{"cmd":"look"}',
+                   extra={'Content-Type': 'application/json'})[0] == 415    # accidental JSON body
+        raw = socket.create_connection(('127.0.0.1', TEST_PORT), timeout=5)     # no Content-Length at all
+        raw.sendall(b'POST /command HTTP/1.1\r\nAuthorization: Bearer ' + token.encode() + b'\r\n\r\n')
+        no_length = raw.recv(4096).decode()
+        raw.close()
+        assert no_length.startswith('HTTP/1.1 411'), no_length.splitlines()[0]
+
+        # dispatch + cursor readback
+        sent = req('/command', b'look')
+        assert sent[0] == 200 and sent[1]['dispatched']
+        events = req('/events?after=' + str(sent[1]['after_seq']))[1]['events']
+        assert any(e['text'] == 'ROOM: look' for e in events)
+        assert req('/status')[1]['commands_sent'] == 1
+
+        # limit batching with the more flag
+        latest = req('/status')[1]['latest_seq']
+        for c in (b'a1', b'a2', b'a3'):
+            assert req('/command', c)[0] == 200
+        batch = req('/events?after=' + str(latest) + '&limit=2')[1]
+        assert [e['text'] for e in batch['events']] == ['ROOM: a1', 'ROOM: a2'] and batch['more'] is True
+        rest = req('/events?after=' + str(batch['events'][-1]['seq']))[1]
+        assert [e['text'] for e in rest['events']] == ['ROOM: a3'] and rest['more'] is False
+
+        # invalid query params are rejected, not silently ignored
+        for q in ('after=abc', 'after=', 'limit=0', 'limit=99999', 'wait_ms=99999', 'bogus=1'):
+            assert req('/events?' + q)[0] == 400, q
+
+        # long poll: no new events -> empty after the full wait
+        latest = req('/status')[1]['latest_seq']
+        t0 = time.time()
+        empty = req('/events?after=%d&wait_ms=300' % latest, timeout=8)[1]
+        assert empty['events'] == [] and time.time() - t0 >= .25, time.time() - t0
+
+        # long poll: event arriving mid-wait returns as soon as it exists
+        delayed = threading.Timer(.5, lambda: req('/command', b'delayed'))
+        delayed.start()
+        t0 = time.time()
+        woken = req('/events?after=%d&wait_ms=3000' % latest, timeout=8)[1]
+        elapsed = time.time() - t0
+        delayed.join()
+        assert any(e['text'] == 'ROOM: delayed' for e in woken['events'])
+        assert elapsed >= .4, elapsed
+
+        # cursor past the end stays empty
+        ahead = req('/events?after=999999')[1]
+        assert ahead['events'] == [] and ahead['more'] is False
+
+        assert req('/status')[1]['commands_sent'] == 5
+        print('PASS: auth, origin rejection, 405/415, Unicode, multiline rejection, '
+              'dispatch + cursor readback, limit batching with more flag, long-poll '
+              '(empty timeout and wake-on-event), invalid-query rejection')
+    finally:
+        p.terminate()
+        p.wait(timeout=5)

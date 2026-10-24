@@ -1,46 +1,73 @@
-BatMUD AgentBridge 0.1.0
+BatMUD AgentBridge 0.2.0
 
-已安装到当前 BatMUD 1.107 的 plugins 目录。每次启动客户端时自动加载。
-插件仅在本机 127.0.0.1:18765 监听，所有接口均要求随机令牌。
-令牌自动保存在游戏用户目录 agent-bridge/token.txt；命令行工具自动读取。
-不包含 AI 模型，不读保存密码的配置，也不主动将游戏输出上传外网。
+已安装到 BatMUD 客户端的 plugins 目录(本机原生 macOS 客户端:
+~/batclient/plugins/agent-bridge.jar)。每次启动客户端时自动加载。
+注意:plugins 目录里不要留任何旧构建副本(包括改过名的),客户端会加载
+目录里所有 jar,旧类可能抢先于新类加载,导致版本不更新。
 
-命令行（在本项目 agent-bridge 目录执行）：
+插件仅在本机 127.0.0.1:18765 监听,所有接口均要求随机令牌。
+令牌自动保存在 ~/batclient/agent-bridge/token.txt;命令行工具自动读取。
+不包含 AI 模型,不读保存密码的配置,也不主动将游戏输出上传外网。
+每个连接由独立守护线程处理:长轮询或慢命令派发不会阻塞其他请求,
+也不会阻塞游戏回调线程。
+
+命令行(在本项目 agent-bridge 目录执行):
   python3 bridge_cli.py status
-  python3 bridge_cli.py read --after 0
+  python3 bridge_cli.py read --after 0 --limit 500 --wait-ms 5000
   python3 bridge_cli.py send look --wait 3
+  python3 bridge_cli.py follow            # 持续打印新输出,Ctrl-C 停止
 
-每次发送前可先保存 status.latest_seq，随后用 read --after 序号读取新增输出。
-send 返回 dispatched=true 仅表示已提交到客户端命令解析器，并不表示服务器执行成功。
-send --wait 3 仅等待三秒采样输出，不保证响应完整。不要自动重试发送失败或超时的指令。
-发送经过客户端命令解析器，因此现有别名、脚本和客户端命令仍会生效。
+每次发送前可先保存 status.latest_seq,随后用 read --after 序号读取新增输出。
+send 返回 dispatched=true 仅表示已提交到客户端命令解析器,并不表示服务器执行成功。
+send --wait 3 会在 3 秒内长轮询新输出,一有新事件立即返回;不保证响应完整。
+不要自动重试发送失败或超时的指令。
+发送经过客户端命令解析器,因此现有别名、脚本和客户端命令仍会生效。
+连不上时命令行会提示检查客户端是否已启动。
 
-HTTP 接口：
+HTTP 接口:
   GET  /status
-  GET  /events?after=0
-  POST /command   正文为 UTF-8 单行命令，例如 look
-请求头：Authorization: Bearer <token.txt 内容>
-命令行工具不使用系统的 HTTP_PROXY / HTTPS_PROXY，始终直连本机。
-不允许带 Origin 的浏览器请求；不要将该接口端口映射到公网。
+  GET  /events?after=0&limit=500&wait_ms=0
+  POST /command   正文为 UTF-8 单行命令,例如 look
+请求头:Authorization: Bearer <token.txt 内容>
+命令行工具不使用系统的 HTTP_PROXY / HTTPS_PROXY,始终直连本机。
+不允许带 Origin 的浏览器请求;不要将该接口端口映射到公网。
+POST /command 若带 Content-Type,只允许 text/* 或
+application/x-www-form-urlencoded(curl -d 与 urllib 的默认值),否则 415;
+这样能拦住 agent 误把 JSON 体当命令发进游戏。
+已知路径用错方法返回 405;未知路径返回 404;非法查询参数返回 400 而非静默忽略。
 
-输出字段：session、latest_seq、oldest_seq、truncated、events。
-每条事件含 seq、time_ms、text（纯文本）、raw（可能含 ANSI 控制符）。
-内存保留最近 2000 条事件；客户端重启后 session 改变、序号从头开始。
-truncated=true 表示请求的部分旧事件已被缓冲区淘汰，需要重新同步。
-输出来自官方插件触发器回调，可能含客户端协议片段，也可能受其他触发器影响。
-connected 表示网络连接状态，不等同于角色已经登录。
+/events 参数:
+  after    上次读到的 seq,只返回其后的新事件(旧事件在前)。
+  limit    本批最多返回多少条(1..2000,默认 500)。
+  wait_ms  无新事件时最多阻塞多少毫秒(0..10000,默认 0)。
+输出字段:session、latest_seq、oldest_seq、truncated、more、events。
+more=true 表示还有未返回的事件,应立即用本批最后一条的 seq 作为 after 续读。
+每条事件含 seq、time_ms、text(纯文本)、raw(可能含 ANSI 控制符与客户端协议片段)。
+内存保留最近 2000 条事件;客户端重启后 session 改变、序号从头开始。
+truncated=true 表示请求的部分旧事件已被缓冲区淘汰,需要重新同步。
+status 另含 oldest_seq,可用来判断游标是否仍然有效。
+connected 表示网络连接状态,不等同于角色已经登录。
 
-验证结果：
-- 本地测试通过：鉴权、拒绝浏览器 Origin、中文、原样保留输出、拒绝多行命令、发送和游标回读。
-- 已在 Wine 下原版 1.107 加载，客户端显示 AgentBridge ready。
-- 通过插件发送一次 look，读回 19 条新事件，包含房间标题、描述及出口信息。
+验证结果(0.2.0,2026-10-24):
+- headless 集成测试(tests/test_bridge.py)全部通过:鉴权、拒绝浏览器 Origin、
+  中文与引号输出、拒绝多行命令、411/415/405/404、limit 分批与 more 标记、
+  wait_ms 长轮询(无事件超时返回 + 事件到来立即唤醒)、非法查询参数拒绝、
+  命令派发与游标回读、commands_sent 计数。
+- 已在真实 BatMUD 客户端(原生 macOS 应用)加载 0.2.0 验证:token 复用旧文件、
+  自动登录后捕获 52 条真实游戏输出、limit=2 返回 more:true、
+  wait_ms=800 实测阻塞约 0.88 秒后返回、游标续读正确。
+- 0.1.0 曾在 Wine 下实测发送 look 并读回 19 条事件;该派发路径 0.2.0 未改动逻辑,
+  仅新增了失败分支的处理(503/500)。
 
-源码：src/local/batbridge/AgentBridge.java
-构建：./build.sh（依赖项目 downloads/bat_interfaces.jar 和 Java 8 JDK）
-测试：先用同一 JDK 编译 tests/BridgeHarness.java，再运行 tests/test_bridge.py。
-测试占用同一端口，只能在游戏客户端关闭时运行。
+源码:src/local/batbridge/AgentBridge.java
+构建:./build.sh(优先用 downloads/bat_interfaces.jar,缺失时自动编译
+      build-stubs 下的接口存根;JDK 依次取 BAT_JDK、runtime/ 目录、系统默认,
+      产物为 Java 8 字节码,输出 agent-bridge.jar)
+测试:先 ./build.sh,再 python3 tests/test_bridge.py。
+      harness 在 18766 端口运行(经 -Dbatbridge.port 指定),
+      因此游戏客户端开着也能跑测试;正式客户端仍固定用 18765。
+      测试会按需自动编译 tests/BridgeHarness.java。
 
-卸载：退出客户端，移走 plugins/agent-bridge.jar，再启动客户端。
-如需轮换令牌：退出客户端，移走 agent-bridge/token.txt，再启动客户端。
-插件目录：
-~/Library/Application Support/BatMUD 1.107 Wine/drive_c/users/admin/batclient/plugins/
+卸载:退出客户端,移走 ~/batclient/plugins/agent-bridge.jar,再启动客户端。
+如需轮换令牌:退出客户端,移走 ~/batclient/agent-bridge/token.txt,再启动客户端。
+回滚:旧版 0.1.0 已备份为 agent-bridge.installed-backup.jar,复制回插件目录即可。
