@@ -54,7 +54,8 @@ class TestDiary(unittest.TestCase):
             first = dy.build_section('2026-10-24', [], [], 0, 0, [], None)
             self.assertEqual(dy.write_diary(first, '2026-10-24', p), 'created')
             older = dy.build_section('2026-10-22', [], [], 0, 0, [], None)
-            self.assertEqual(dy.write_diary(older, '2026-10-22', p), 'inserted')
+            # 唯一已有的 10-24 比它新,所以 10-22 追加到末尾,仍保持倒序
+            self.assertEqual(dy.write_diary(older, '2026-10-22', p), 'appended')
             text = p.read_text(encoding='utf-8')
             self.assertLess(text.index('## 2026-10-24'), text.index('## 2026-10-22'))
             # 重跑同一天:覆盖而不是重复
