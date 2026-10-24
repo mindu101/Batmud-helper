@@ -4,11 +4,24 @@
 
 ## 2026-10-24
 
-- 经验:19227 → 19227(+0)
-- 发出命令 23 条(去重 8 种):look、help policy、help rules、help robot、n、help flooding、help cheating、help spamming
+- 发出命令 25 条(去重 8 种):look、help policy、help rules、help robot、n、help flooding、help cheating、help spamming
 - 学单词 1 个:portcullis
 - 地图:共 0 个房间、0 条走过的边
-- 工程进展(18 个提交):
+- 工程进展(32 个提交):
+  - 89bcce9 Fix room-title misdetection across read-batch boundaries
+  - 5388dc7 Docs: sync README and 使用说明 with 12 MCP tools and runtime six-pack
+  - cf55d67 Add kit_sync: auto-commit and push memories at session end
+  - c4eea66 MCP server: add vocab/map/state/diary/find_word tools (now 12 tools)
+  - 8a3d9e7 Translate window: token savings, glossary injection, usage tracking
+  - 14f7f5e Add shared game state tracking (hp/sp/ep/cash/exp + current room)
+  - 393cb25 Add batbridge.vocab: shared three-layer vocabulary writer + glossary
+  - 228ae0a Rewrite README as a comprehensive bilingual (中文/English) project overview
+  - d1a50b4 Revert "translate_window: Chinese-only output with blank line separators"
+  - 42e9dce Ignore macOS .DS_Store
+  - 6f27e2e translate_window: Chinese-only output with blank line separators
+  - 05c5d65 Switch translation to deepseek-flash and harden HTTPS CAs
+  - b06a0fb Fix diary test expectation: appending an older date is correct order
+  - f0a9292 Add daily diary: one-command session digest
   - cbcf9f2 Add disconnect watchdog with macOS notifications
   - 1c83b23 Add room mapper with pathfinding for "take me to room X"
   - 86ab1e0 Add bilingual follow window powered by DeepSeek API
