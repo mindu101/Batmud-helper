@@ -55,11 +55,18 @@ MCP 已注册到本仓库 .zcode/config.json(工作区作用域,本会话项目�
 副驾驶套件:agent-bridge/agent/(AGENTS.md 加载说明、fingerprint.md
 行为指纹、memory/ 短期+长期记忆+单词本+地图+日记、refresh.py 快照刷新)。
 任何 agent 从仓库根 AGENTS.md 进入即可接班;根 AGENTS.md 是入口。
-运行时四件套(agent-bridge/tools/):translate_window.py 双语跟随窗
-(DeepSeek API,key 读 DEEPSEEK_API_KEY 或 ~/.deepseek_api_key)、
+运行时六件套(agent-bridge/tools/):translate_window.py 双语跟随窗
+(DeepSeek flash,key 读 DEEPSEEK_API_KEY 或 ~/.deepseek_api_key;
+系统提示词字节级稳定吃满前缀缓存~1/10 价,术语表按批注入保持译名
+一致,用量统计在 ~/.deepseek_usage.json)、
 mapper.py 房间地图记录与寻路(route/rooms/record/stats)、
+state_watch.py 游戏状态监视(state.json:血法精/现金/经验/位置)、
 watchdog.py 掉线看门狗(macOS 通知,--relaunch 可自动拉起客户端)、
-diary.py 每日小结;各有对应测试(tests/test_*.py)。
+diary.py 每日小结、kit_sync.py 记忆自动入库(会话收尾跑);
+数据模块支持 BATBRIDGE_MEMORY_DIR / BATBRIDGE_AUDIT 环境变量沙箱。
+MCP 共 12 个工具(status/read/send/state/find_word/vocab_add/
+map_route/map_rooms/diary_write/kb_search/kb_read/kb_list);
+各有对应测试(tests/test_*.py)。
 
 HTTP 接口:
   GET  /status

@@ -39,12 +39,14 @@ BatMUD 官方客户端(闭源)
 
 **Python 库(`agent-bridge/pylib/batbridge/`)**
 - `client.py`:零依赖 HTTP 客户端,异常模型固化桥接契约(429 带 `retry_after_ms`,连接错误给人话提示)
-- `lines.py`:行重组与降噪——跨事件碎片拼行、剥离 ANSI/BatClient 热键标记、空行过滤、重复行折叠(保留次数)、行分类(`exits`/`chat`/`room_title?`/`prompt`)
+- `lines.py`:行重组与降噪——跨事件碎片拼行、剥离 ANSI/BatClient 热键标记、丢弃协议噪音、空行过滤、重复行折叠(保留次数)、行分类(`exits`/`chat`/`room_title?`/`prompt`)
 - `kb.py`:对 `knowledge/`、`sources/`、`research/` 笔记做零依赖检索(标题加权),`read` 带路径守卫
+- `state.py`:共享游戏状态(血/法/精力/现金/经验/当前房间),未观察到的字段不编造
+- `vocab.py`:三层单词本写入/读取(完整词条 / 纯英文释义 / 纯单词),并产出翻译用术语表
 
 **MCP server(`mcp_server.py`)**
 - 零依赖手写 MCP stdio(JSON-RPC),Python 3.8 可跑
-- 六个工具:`batmud_status` / `batmud_read`(默认输出干净逻辑行)/ `batmud_send`(429/504 语义透传)/ `kb_search` / `kb_read` / `kb_list`
+- **12 个工具**:`batmud_status` / `batmud_read`(默认输出干净逻辑行)/ `batmud_send`(429/504 语义透传)/ `batmud_state` / `find_word` / `vocab_add` / `map_route` / `map_rooms` / `diary_write` / `kb_search` / `kb_read` / `kb_list`
 - 已在 `.zcode/config.json` 注册工作区作用域,会话自动连接
 
 **副驾驶套件(`agent-bridge/agent/`)** —— 任何 agent 可加载
@@ -52,11 +54,13 @@ BatMUD 官方客户端(闭源)
 - `memory/` 长期记忆(角色/环境/规则/踩坑/黑话词典)、短期记忆(`refresh.py` 一键刷新实时快照)、单词本三层(`vocabulary.md` 完整词条 / `vocabulary.txt` 纯英文释义 / `words.txt` 纯单词列表)
 - 仓库根 `AGENTS.md` 是入口:任何 agent 打开仓库即被引导完成接班
 
-**运行时四件套(`agent-bridge/tools/`)**
-- `translate_window.py` 双语跟随窗:DeepSeek API 批量翻译游戏画面,状态条本地中文化零成本,行级缓存省 token,API 故障不挡画面
+**运行时六件套(`agent-bridge/tools/`)**
+- `translate_window.py` 双语跟随窗:DeepSeek API 批量翻译游戏画面,状态条本地中文化零成本,行级缓存省 token,术语表按批注入(译名与你学的单词一致),系统提示词字节级稳定以吃满 DeepSeek 自动前缀缓存(命中约 1/10 价),用量统计落盘
 - `mapper.py` 地图:被动记录房间与"走过的边",BFS 寻路支持"带我去某房间"
+- `state_watch.py` 状态监视:持续更新 state.json(血/法/精力/现金/经验/位置)
 - `watchdog.py` 看门狗:客户端崩溃/掉线弹 macOS 通知,可选自动拉起客户端
 - `diary.py` 每日小结:经验变化、命令统计、新学单词、地图现状、工程提交
+- `kit_sync.py` 记忆自动入库:会话收尾把记忆与笔记 commit+push
 
 ### 快速开始
 
@@ -141,12 +145,14 @@ BatMUD official client (closed-source)
 
 **Python library** — `agent-bridge/pylib/batbridge/`
 - `client.py`: dependency-free HTTP client whose error model encodes the bridge contract (429 exposes `retry_after_ms`; connection failures get human-readable hints)
-- `lines.py`: reassembly & noise filtering — joins cross-event fragments, strips ANSI/BatClient hotkey markup, drops empty lines, collapses repeats (keeping counts), classifies lines (`exits` / `chat` / `room_title?` / `prompt`)
+- `lines.py`: reassembly & noise filtering — joins cross-event fragments, strips ANSI/BatClient hotkey markup, drops protocol noise, drops empty lines, collapses repeats (keeping counts), classifies lines (`exits` / `chat` / `room_title?` / `prompt`)
 - `kb.py`: dependency-free search over `knowledge/`, `sources/`, `research/` notes (title boost) with path-guarded `read`
+- `state.py`: shared game state (hp/sp/ep/cash/exp/current room); unobserved fields stay null, never fabricated
+- `vocab.py`: 3-layer vocabulary writer/reader (full entries / English-only / bare words) plus a glossary feed for translation consistency
 
 **MCP server** — `mcp_server.py`
 - Hand-written MCP stdio (JSON-RPC) with zero dependencies; runs on Python 3.8
-- Six tools: `batmud_status` / `batmud_read` (clean logical lines by default) / `batmud_send` (429/504 semantics preserved) / `kb_search` / `kb_read` / `kb_list`
+- **12 tools**: `batmud_status` / `batmud_read` (clean logical lines by default) / `batmud_send` (429/504 semantics preserved) / `batmud_state` / `find_word` / `vocab_add` / `map_route` / `map_rooms` / `diary_write` / `kb_search` / `kb_read` / `kb_list`
 - Registered at workspace scope in `.zcode/config.json`; auto-connects in sessions
 
 **Co-pilot kit** — `agent-bridge/agent/` (loadable by any agent)
@@ -155,10 +161,12 @@ BatMUD official client (closed-source)
 - Repo-root `AGENTS.md` is the entry point that onboards any agent
 
 **Runtime tools** — `agent-bridge/tools/`
-- `translate_window.py`: bilingual follow window — batch translation via the DeepSeek API, status bar localized for free, per-line cache to save tokens, API outages never block the view
+- `translate_window.py`: bilingual follow window — batch translation via the DeepSeek API, status bar localized for free, per-line cache, per-batch glossary injection (terms match your own word book), byte-stable system prompt to maximize DeepSeek's automatic prefix caching (~1/10 price on hits), usage tracking
 - `mapper.py`: passively records rooms and traversed edges; BFS routing for "take me to room X"
+- `state_watch.py`: continuously updates state.json (hp/sp/ep/cash/exp/room)
 - `watchdog.py`: macOS notifications when the client crashes or the game link drops; optional auto-relaunch
 - `diary.py`: daily digest — XP delta, command stats, new words, map size, commits
+- `kit_sync.py`: auto-commit and push memories/notes at session end
 
 ### Quick start
 
