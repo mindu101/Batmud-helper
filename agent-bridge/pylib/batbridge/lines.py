@@ -50,7 +50,7 @@ def clean_lines(events, collapse_repeats=True):
     Returns (lines, stats) where stats reports dropped/collapsed counts.
     """
     lines, stats = [], {'events': 0, 'dropped_empty': 0, 'collapsed': 0}
-    buf, seq_start, seq_end, open_frag = [], None, None, False
+    buf, seq_start, seq_end, open_frag, last_time = [], None, None, False, None
 
     def flush():
         """Emit one logical line from the buffer."""
@@ -62,7 +62,7 @@ def clean_lines(events, collapse_repeats=True):
         if not text.strip():
             stats['dropped_empty'] += 1
             return
-        entry = {'seq_start': seq_start, 'seq_end': seq_end,
+        entry = {'seq_start': seq_start, 'seq_end': seq_end, 'time_ms': last_time,
                  'text': text.rstrip('\n'), 'kind': 'text', 'repeats': 1}
         if not text.endswith('\n'):
             entry['kind'] = 'prompt'  # incomplete: no terminating newline
@@ -72,6 +72,7 @@ def clean_lines(events, collapse_repeats=True):
         stats['events'] += 1
         text = ev.get('text') or ''
         seq = ev.get('seq')
+        last_time = ev.get('time_ms', last_time)
         if seq_start is None:
             seq_start = seq
         seq_end = seq
