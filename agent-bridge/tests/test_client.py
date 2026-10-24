@@ -55,7 +55,7 @@ class TestFunctional(HarnessBase):
 
     def test_status_and_version(self):
         st = self.client.status()
-        self.assertEqual(st['version'], '0.3.0')
+        self.assertEqual(st['version'], '0.4.0')
         self.assertIn('oldest_seq', st)
 
     def test_read_returns_unicode_event(self):

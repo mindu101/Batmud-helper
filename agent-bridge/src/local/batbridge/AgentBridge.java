@@ -33,7 +33,8 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
     // system properties; production defaults are 3 and 3000.
     private static final long RATE_BURST = Math.max(1, Long.getLong("batbridge.rate.burst", 3));
     private static final long RATE_REFILL_MS = Math.max(1, Long.getLong("batbridge.rate.refill_ms", 3000));
-    private static final String VERSION = "0.3.0";
+    private static final String VERSION = "0.4.0";
+    private static final long PERSIST_ROTATE_BYTES = 8L * 1024 * 1024;
 
     private final Deque<String> events = new ArrayDeque<String>();
     private long seq = 0, commands = 0;
@@ -43,6 +44,7 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
     private ExecutorService pool;
     private String token;
     private Path auditLog;
+    private BufferedWriter persistWriter;
     private double rateTokens = RATE_BURST;
     private long rateLastMs = System.currentTimeMillis();
     private final String session = UUID.randomUUID().toString();
@@ -66,6 +68,7 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
             Path dir = Paths.get(getBaseDirectory(), "agent-bridge");
             Files.createDirectories(dir);
             auditLog = dir.resolve("command-log.jsonl");
+            setupPersistence(dir);
             Path key = dir.resolve("token.txt");
             if (Files.exists(key)) {
                 token = new String(Files.readAllBytes(key), StandardCharsets.UTF_8).trim();
@@ -110,7 +113,35 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
         events.addLast("{\"seq\":" + id + ",\"time_ms\":" + System.currentTimeMillis()
                 + ",\"text\":" + quote(text) + ",\"raw\":" + quote(raw) + "}");
         while (events.size() > CAPACITY) events.removeFirst();
+        if (persistWriter != null) {
+            try {
+                persistWriter.write("{\"seq\":" + id + ",\"time_ms\":"
+                        + System.currentTimeMillis() + ",\"text\":" + quote(text) + "}\n");
+                persistWriter.flush(); // persisted stream must survive a crash
+            } catch (IOException e) {
+                persistWriter = null; // never let persistence break the game stream
+            }
+        }
         notifyAll(); // wake long-polling /events readers
+    }
+
+    /**
+     * Opt-in event persistence: creating agent-bridge/persist.txt enables
+     * appending {seq, time_ms, text} for every event to events.jsonl so
+     * context survives client restarts. Off by default; rotates at 8 MB.
+     */
+    private void setupPersistence(Path dir) throws IOException {
+        if (!Files.exists(dir.resolve("persist.txt"))) return;
+        Path file = dir.resolve("events.jsonl");
+        if (Files.exists(file) && Files.size(file) > PERSIST_ROTATE_BYTES) {
+            Files.move(file, dir.resolve("events.jsonl.1"), StandardCopyOption.REPLACE_EXISTING);
+        }
+        try {
+            persistWriter = Files.newBufferedWriter(file, StandardCharsets.UTF_8,
+                    StandardOpenOption.CREATE, StandardOpenOption.APPEND);
+        } catch (IOException e) {
+            persistWriter = null; // fall back to memory-only, like the default
+        }
     }
 
     private synchronized String status() {
@@ -120,6 +151,7 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
                 + ",\"latest_seq\":" + seq
                 + ",\"oldest_seq\":" + (seq - events.size() + 1)
                 + ",\"commands_sent\":" + commands
+                + ",\"persisting\":" + (persistWriter != null)
                 + ",\"rate_burst\":" + RATE_BURST
                 + ",\"rate_refill_ms\":" + RATE_REFILL_MS + "}";
     }
@@ -378,6 +410,10 @@ public final class AgentBridge extends BatClientPlugin implements BatClientPlugi
         shutdownRequested = true;
         running = false;
         notifyAll(); // wake long-polling /events readers so they can finish
+        if (persistWriter != null) {
+            try { persistWriter.close(); } catch (IOException ignored) {}
+            persistWriter = null;
+        }
         try { if (server != null) server.close(); } catch (IOException ignored) {}
     }
 }

@@ -90,7 +90,7 @@ with tempfile.TemporaryDirectory() as temp:
 
         status = req('/status')
         assert status[0] == 200
-        assert status[1]['version'] == '0.3.0' and 'oldest_seq' in status[1], status
+        assert status[1]['version'] == '0.4.0' and 'oldest_seq' in status[1], status
         assert status[1]['rate_burst'] == 20 and status[1]['rate_refill_ms'] == 3000, status
 
         # auth, browser-origin rejection, unknown path, wrong methods
@@ -214,6 +214,54 @@ with tempfile.TemporaryDirectory() as temp:
 
         print('run 2 PASS: rate limit burst 2, 429 with retry_after_ms + Retry-After header, '
               'rejections dispatch nothing, refill allows retry, audit matches dispatches')
+    finally:
+        p.terminate()
+        p.wait(timeout=5)
+
+
+# ---- Run 3: event persistence (opt-in via persist.txt, default off) ----
+
+def read_persisted(temp):
+    path = pathlib.Path(temp) / 'agent-bridge/events.jsonl'
+    return [json.loads(l) for l in path.read_text().splitlines()]
+
+
+# 3a: default off — no marker file, no events.jsonl ever created
+with tempfile.TemporaryDirectory() as temp:
+    p = start_harness(temp, ['-Dbatbridge.rate.burst=20'])
+    try:
+        token, req = wait_ready(p, temp)
+        assert req('/status')[1]['persisting'] is False
+        assert req('/command', b'look')[0] == 200
+        assert not (pathlib.Path(temp) / 'agent-bridge/events.jsonl').exists()
+        print('run 3a PASS: persistence off by default (no marker, no file, status flag false)')
+    finally:
+        p.terminate()
+        p.wait(timeout=5)
+
+# 3b: marker file created before startup — every event appended as JSONL
+with tempfile.TemporaryDirectory() as temp:
+    marker = pathlib.Path(temp) / 'agent-bridge'
+    marker.mkdir()
+    (marker / 'persist.txt').write_text('')
+    p = start_harness(temp, ['-Dbatbridge.rate.burst=20'])
+    try:
+        token, req = wait_ready(p, temp)
+        assert req('/status')[1]['persisting'] is True
+        for _ in range(80):
+            batch = req('/events?after=0')[1]
+            if batch['events']:
+                break
+            time.sleep(.05)
+        latest = req('/status')[1]['latest_seq']
+        assert req('/command', b'look')[0] == 200
+        time.sleep(.2)  # give the writer a moment to flush
+        persisted = read_persisted(temp)
+        assert [l['seq'] for l in persisted] == list(range(1, latest + 2)), persisted
+        assert any('中文' in l['text'] for l in persisted)
+        assert all('raw' not in l for l in persisted)  # text only, keeps files small
+        print('run 3b PASS: persist.txt opt-in persists every event as JSONL '
+              '(seqs 1..latest, unicode text, no raw field)')
     finally:
         p.terminate()
         p.wait(timeout=5)

@@ -117,7 +117,7 @@ class TestMcpServer(unittest.TestCase):
 
     def test_status_read_send_roundtrip(self):
         _, text = self.mcp.call('batmud_status')
-        self.assertIn('"version": "0.3.0"', text)
+        self.assertIn('"version": "0.4.0"', text)
 
         _, text = self.mcp.call('batmud_send', {'command': 'look', 'wait_s': 2})
         payload = json.loads(text)

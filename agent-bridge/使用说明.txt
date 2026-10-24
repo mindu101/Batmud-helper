@@ -1,4 +1,4 @@
-BatMUD AgentBridge 0.3.0
+BatMUD AgentBridge 0.4.0
 
 已安装到 BatMUD 客户端的 plugins 目录(本机原生 macOS 客户端:
 ~/batclient/plugins/agent-bridge.jar)。每次启动客户端时自动加载。
@@ -24,12 +24,16 @@ send --wait 3 会在 3 秒内长轮询新输出,一有新事件立即返回;不�
 发送经过客户端命令解析器,因此现有别名、脚本和客户端命令仍会生效。
 连不上时命令行会提示检查客户端是否已启动。
 
-命令限速(0.3.0):
-令牌桶容量 3 条(突发 3 条),之后每 3000ms 恢复 1 条。
+命令限速(0.3.0,实测数据见下):
+令牌桶容量 3 条(突发 3 条),之后每 3000ms 连续回充 1 条。
 超限返回 429 {"error":"rate_limited","dispatched":false,"retry_after_ms":N}
 并带 Retry-After 头。被限速的命令【没有】发进游戏,等 retry_after_ms 后
 重试是安全的——这与 504(派发超时、结果未知、不要盲目重试)不同。
 status 里的 rate_burst / rate_refill_ms 就是当前配置。
+2026-10-24 实测(真实客户端):连发 6 条时前 3 条 200、第 4-6 条 429 且
+第 4 条 retry_after_ms=2987(按连续回充精确计算,非死板整 3 秒);
+突发 3 条后 +1.5s 探测 429(retry_after_ms=1481,数学上等于
+(1-1.5/3)*3000);每 3.1s 发 1 条稳态全部 200。
 
 命令审计日志(0.3.0):
 每条实际派发的命令按 JSONL 追加写到
@@ -37,6 +41,17 @@ status 里的 rate_burst / rate_refill_ms 就是当前配置。
 (字段: time_ms、session、command、after_seq)。
 被 400/401/415/429 拒绝的命令不会写入——日志只记真正进入游戏的命令,
 用于事后完整回放 agent 到底发了什么。文件不自动轮转,想清空直接删除。
+
+事件落盘(0.4.0,默认关闭):
+默认事件只在内存(2000 条环形缓冲),客户端重启即清零。
+在 agent-bridge 目录(即 ~/batclient/agent-bridge/)创建名为 persist.txt
+的空文件并重启客户端,即开启持久化:每条事件按 JSONL 追加写入同目录
+events.jsonl(字段 seq、time_ms、text;不含 raw 以省空间),逐行即时
+flush,崩溃也不丢;超过 8MB 时启动时轮转为 events.jsonl.1。
+status 新增 persisting 字段显示当前开关。删除 persist.txt 并重启即关闭。
+Python 侧配套:pylib/batbridge(lines 行重组/过滤、kb 知识库检索、
+client 客户端库、mcp_server MCP 服务),tests/ 下各有对应测试;
+MCP 已注册到本仓库 .zcode/config.json(工作区作用域,本会话项目自动连接)。
 
 HTTP 接口:
   GET  /status
@@ -63,11 +78,13 @@ truncated=true 表示请求的部分旧事件已被缓冲区淘汰,需要重新�
 status 另含 oldest_seq,可用来判断游标是否仍然有效。
 connected 表示网络连接状态,不等同于角色已经登录。
 
-验证结果(0.3.0,2026-10-24):
-- headless 集成测试两轮全部通过:第一轮(放大限速桶)覆盖 0.2.0 全部断言
-  外加审计日志内容校验;第二轮(桶=2、恢复=400ms)确定性验证限速:
-  突发 2 条后第 3 条 429、retry_after_ms 与 Retry-After 头、被拒命令
-  不派发(commands_sent 不变)、等待恢复后同一命令可重试、审计与派发一致。
+验证结果(0.4.0,2026-10-24):
+- headless 测试四轮全过:run1 全量功能+审计、run2 限速确定性、
+  run3a 落盘默认关(无标记文件则无文件生成)、run3b 落盘开启(逐事件
+  JSONL、seq 连续、含中文、不含 raw)。
+- Python 侧:lines 10 用例、kb 8 用例、client 6 用例(含 429 属性)、
+  mcp_server 7 用例(真进程 stdio 全链路)全部通过;MCP 对真实客户端
+  只读冒烟通过。
 - 已在真实 BatMUD 客户端加载 0.3.0 实测:连发 4 条 look,前 3 条派发并
   确认被游戏执行(读回房间输出),第 4 条 429 且 retry_after_ms=2971,
   审计日志恰好 3 条 look。
