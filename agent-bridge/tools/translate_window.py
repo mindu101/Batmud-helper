@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""双语跟随窗:实时滚动游戏画面,英文原文 + DeepSeek 中文翻译。
+"""双语跟随窗:终端里只输出中文翻译(每条前空一行),DeepSeek 驱动。
 
 用法(另开一个终端窗口跑着即可):
-    export DEEPSEEK_API_KEY=sk-xxxx        # 或把 key 存进 ~/.deepseek_api_key
     python3 agent-bridge/tools/translate_window.py
+    (key 读 DEEPSEEK_API_KEY 环境变量,或 ~/.deepseek_api_key 文件)
 
 行为:
 - 跟随桥的事件流(长轮询),先做行重组/去噪(lines.py),
-  打印 "EN│ 原文" 与 "中│ 译文" 两行。
+  每条输出一个空行 + 中文译文;不再显示英文原文。
 - hp/sp/ep/cash/exp 状态行本地格式化成中文,不花 API。
 - 已翻译过的行走缓存,不重复花钱;渠道闲聊重复刷屏基本零成本。
 - 批量翻译:安静 ~1.2 秒或攒满 15 行才发一次请求;API 挂了不挡画面,
-  原文照常显示并给出提示,退避后自动重试新内容。
+  该条显示"(翻译暂缺) 原文"并退避,恢复后自动继续。
 - Ctrl-C 退出。参数:--after N 从指定 seq 开始(默认从当前最新开始)。
 """
 import argparse
@@ -139,10 +139,9 @@ class TranslationCache(dict):
         self[k] = v
 
 
-def emit(out, text_zh, text_en):
-    out.write('中│ %s\n' % text_zh)
-    if text_en is not None:
-        out.write('EN│ %s\n' % text_en)
+def emit(out, text_zh):
+    """每个条目前空一行,只输出中文。"""
+    out.write('\n%s\n' % text_zh)
     out.flush()
 
 
@@ -161,7 +160,7 @@ def run(client, out, key, post=None, after=None, sleep=time.sleep, stop=None):
             return
         if time.time() < api_down_until:
             for entry in pending:
-                emit(out, '(翻译服务暂不可用) ' + entry['text'], entry['text'])
+                emit(out, '(翻译暂缺) ' + entry['text'])
             del pending[:]
             return
         try:
@@ -170,14 +169,14 @@ def run(client, out, key, post=None, after=None, sleep=time.sleep, stop=None):
         except Exception as e:
             api_down_until = time.time() + BACKOFF_S
             for entry in pending:
-                emit(out, '(翻译暂缺:%s)' % type(e).__name__, entry['text'])
+                emit(out, '(翻译暂缺) ' + entry['text'])
             del pending[:]
             out.write('— 翻译服务异常,退避 %ds:%s\n' % (BACKOFF_S, e))
             out.flush()
             return
         for entry, zh in zip(pending, translations):
             cache.put(entry['text'], zh)
-            emit(out, zh, entry['text'])
+            emit(out, zh)
         del pending[:]
 
     while stop is None or not stop():
@@ -195,9 +194,9 @@ def run(client, out, key, post=None, after=None, sleep=time.sleep, stop=None):
             for entry in lines:
                 text = entry['text']
                 if text.startswith('hp: ') and format_status_zh(text):
-                    emit(out, format_status_zh(text), None)  # 状态条本地中文化
+                    emit(out, format_status_zh(text))  # 状态条本地中文化
                 elif text in cache:
-                    emit(out, cache[text], text)
+                    emit(out, cache[text])
                 else:
                     pending.append(entry)
             last_new_ts = time.time()
