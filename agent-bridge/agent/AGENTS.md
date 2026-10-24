@@ -107,3 +107,11 @@ python3 agent-bridge/agent/refresh.py
   (help 原文、kb 文档、实测)。
 - fingerprint.md:原则上**不改**。行为要变,先改指纹再行动,
   并在"变更记录"里注明原因与日期。
+- **会话收尾三步**(固定动作):
+  1. `python3 agent-bridge/agent/refresh.py`(刷新实时快照)
+  2. `python3 agent-bridge/tools/diary.py`(当日日记;或 MCP diary_write)
+  3. `python3 agent-bridge/tools/kit_sync.py`(记忆与笔记自动
+     commit+push——记忆是最不可再生的资产,不留在工作区过夜)
+- 12 个 MCP 工具已覆盖大部分操作(status/read/send/state/
+  find_word/vocab_add/map_route/map_rooms/diary_write/kb_*),
+  优先用工具,CLI 作后备。
