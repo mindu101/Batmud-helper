@@ -1,0 +1,4 @@
+English-only word list (one line per word: word - meaning).
+Companion to vocabulary.md; kept alphabetical; no Chinese, no context here.
+
+portcullis - a heavy iron grating sliding up and down over a castle gateway to block the entrance
